@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silent Library Designer &middot; Synonymous DNA Library Oligomer Designer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap">
+    <a class="logo" href="{{ url_for('designer') }}">Silent Library <span class="dot">Designer</span></a>
+    <div class="topbar-right">
+      <span class="preview-tag">Research tool</span>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <section class="hero">
+    <div class="eyebrow">Silent Library Designer</div>
+    <h1>Synonymous DNA Library Oligomer Designer</h1>
+    <p>Design assembly-ready oligomers for synonymous DNA libraries from a WT coding sequence.</p>
+    <div class="pills">
+      <span class="pill">Research Tool</span>
+      <span class="pill">Synonymous Library Design</span>
+      <span class="pill">PCA-ready Oligomers</span>
+    </div>
+  </section>
+
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  {% if warning %}<div class="alert alert-warn">{{ warning }}</div>{% endif %}
+
+  <form method="post" id="designForm">
+    <section class="card">
+      <div class="card-head">
+        <h2 class="step"><span class="step-n">1</span> Input WT Coding Sequence</h2>
+        <span class="tag">Example: sfGFP</span>
+      </div>
+
+      <div class="field">
+        <label class="flabel" for="dna_sequence">DNA sequence <span class="hint">&mdash; 5&prime;&rarr;3&prime;, A/T/G/C only</span></label>
+        <textarea class="seq-input" id="dna_sequence" name="dna_sequence" spellcheck="false">{{ form.dna_sequence }}</textarea>
+        <div class="status-strip" id="dnaStatus"></div>
+      </div>
+
+      <div class="field">
+        <label class="flabel" for="amino_acid_sequence">Amino acid sequence <span class="hint">&mdash; 1-letter code, stop = *</span></label>
+        <textarea class="seq-input sm" id="amino_acid_sequence" name="amino_acid_sequence" spellcheck="false">{{ form.amino_acid_sequence }}</textarea>
+        <div class="status-strip" id="aaStatus"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head tight">
+        <h2 class="step"><span class="step-n">2</span> Design Settings</h2>
+      </div>
+
+      <div class="mode-row">
+        <label class="mode-opt" id="modeAutoLabel">
+          <input type="checkbox" id="auto_split" name="auto_split" {% if form.auto_split %}checked{% endif %}>
+          Auto optimization
+        </label>
+        <label class="mode-opt" id="modeManualLabel">Manual &mdash; 아래 값 직접 지정</label>
+      </div>
+
+      <div class="manual-grid" id="manualGrid">
+        <div class="field">
+          <label class="flabel" for="oligo_length">Oligomer length <span class="hint">(nt)</span></label>
+          <input class="num-input" type="number" id="oligo_length" name="oligo_length" value="{{ form.oligo_length }}" min="10">
+        </div>
+        <div class="field">
+          <label class="flabel" for="overlap">Overlap length <span class="hint">(nt)</span></label>
+          <input class="num-input" type="number" id="overlap" name="overlap" value="{{ form.overlap }}" min="1">
+        </div>
+      </div>
+
+      <p class="setting-note">Auto는 45&ndash;65&deg;C를 훑어 Tm 일관성 &rarr; 3&prime; 말단 품질 &rarr; GC% &rarr; 비용 순으로 채점합니다. 모든 계산은 실제 염기 기준입니다.</p>
+    </section>
+
+    <div class="action-row">
+      <button class="btn-primary" type="submit" name="action" value="run">Design Library Oligomers</button>
+    </div>
+  </form>
+
+  <section class="workflow">
+    <div class="wf-label">Workflow</div>
+    <div class="wf-chain">
+      <span class="wf-step"><i class="wf-dot"></i>WT CDS</span>
+      <span class="wf-arrow">&rarr;</span>
+      <span class="wf-step teal"><i class="wf-dot"></i>Synonymous codon conversion</span>
+      <span class="wf-arrow">&rarr;</span>
+      <span class="wf-step"><i class="wf-dot"></i>Assembly-aware oligomer design</span>
+      <span class="wf-arrow">&rarr;</span>
+      <span class="wf-step"><i class="wf-dot"></i>PCA-ready oligomers</span>
+    </div>
+    <div class="wf-down">
+      <span class="wf-down-label">Downstream</span>
+      <span>DNA assembly</span><span>&rarr;</span>
+      <span>384-well CFPS</span><span>&rarr;</span>
+      <span>Genotype&ndash;phenotype analysis</span>
+    </div>
+  </section>
+
+  <details class="method">
+    <summary>How the design works &mdash; 설계 원리와 접합부 처리 방식</summary>
+    <div class="method-body">
+
+      <div class="map-legend" style="margin-bottom:18px;">
+        <span><i class="sw sw-fix"></i>WT fixed &mdash; 실제 염기, Tm 계산이 유효한 구간</span>
+        <span><i class="sw sw-deg"></i>Degenerate &mdash; IUPAC 코드, 라이브러리 다양성이 생기는 구간</span>
+      </div>
+
+      <figure class="fig">
+        <div class="fig-head"><span class="fig-n">Figure 1</span>두 갈래로 계산해서 마지막에 합치는 구조</div>
+        <div class="fig-scroll">
+          <svg id="figPipeline" viewBox="0 0 1120 440" role="img"
+               aria-label="WT DNA 서열은 위쪽 경로에서 Tm, GC, dimer 점수로 올리고 경계를 정하고, AA 서열은 아래쪽 경로에서 IUPAC 축퇴 서열이 된다. 두 경로는 접합부 복원 단계에서 합쳐져 최종 올리고 세트가 된다.">
+            <defs>
+              <marker id="fx1-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 Z"/></marker>
+              <marker id="fx1-faint" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 Z"/></marker>
+              <marker id="fx1-fix" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="mk-fix" d="M0 0 L10 5 L0 10 Z"/></marker>
+              <marker id="fx1-deg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="mk-deg" d="M0 0 L10 5 L0 10 Z"/></marker>
+            </defs>
+
+            <text class="fx-track fx-is-fix" x="20" y="22">Real-base path</text>
+            <text class="fx-track fx-is-deg" x="20" y="282">Degenerate path</text>
+
+            <rect class="fx-bx-fix" x="20" y="48" width="156" height="80" rx="6"/>
+            <text class="fx-title" x="98" y="73" text-anchor="middle">WT DNA 서열</text>
+            <text class="fx-mono" x="98" y="93" text-anchor="middle">ATGAGCAAAGG&hellip;</text>
+            <text class="fx-sub" x="98" y="112" text-anchor="middle">길이 &divide; 3 = 정수</text>
+
+            <rect class="fx-bx-fix" x="248" y="30" width="156" height="116" rx="6"/>
+            <text class="fx-title" x="326" y="55" text-anchor="middle">접합부 후보 스캔</text>
+            <text class="fx-sub" x="326" y="77" text-anchor="middle">Tm &middot; nearest-neighbor</text>
+            <text class="fx-sub" x="326" y="95" text-anchor="middle">GC% &middot; 3&prime; 말단 clamp</text>
+            <text class="fx-sub" x="326" y="113" text-anchor="middle">dimer &middot; hairpin &Delta;G</text>
+            <text class="fx-sub fx-is-fix" x="326" y="133" text-anchor="middle">모두 실제 염기로 계산</text>
+
+            <rect class="fx-bx-fix" x="476" y="48" width="156" height="80" rx="6"/>
+            <text class="fx-title" x="554" y="73" text-anchor="middle">올리고 경계 확정</text>
+            <text class="fx-sub" x="554" y="94" text-anchor="middle">start / end 좌표</text>
+            <text class="fx-sub" x="554" y="112" text-anchor="middle">접합부 Tm 편차 최소</text>
+
+            <rect class="fx-bx-deg" x="20" y="308" width="156" height="80" rx="6"/>
+            <text class="fx-title" x="98" y="333" text-anchor="middle">AA 서열</text>
+            <text class="fx-mono" x="98" y="353" text-anchor="middle">MSKGEELFTGVV&hellip;</text>
+            <text class="fx-sub" x="98" y="372" text-anchor="middle">번역 결과와 대조</text>
+
+            <rect class="fx-bx-deg" x="248" y="290" width="156" height="116" rx="6"/>
+            <text class="fx-title" x="326" y="315" text-anchor="middle">IUPAC 코돈 치환</text>
+            <text class="fx-mono-s" x="326" y="337" text-anchor="middle">L &rarr; CTN / TTR</text>
+            <text class="fx-mono-s" x="326" y="355" text-anchor="middle">S &rarr; TCN / AGY</text>
+            <text class="fx-mono-s" x="326" y="373" text-anchor="middle">R &rarr; CGN / AGR</text>
+            <text class="fx-sub fx-is-deg" x="326" y="393" text-anchor="middle">앞 2염기로 갈래 선택</text>
+
+            <rect class="fx-bx-deg" x="476" y="308" width="156" height="80" rx="6"/>
+            <text class="fx-title" x="554" y="333" text-anchor="middle">축퇴 서열</text>
+            <text class="fx-mono" x="554" y="353" text-anchor="middle">ATGAGYAARGGN&hellip;</text>
+            <text class="fx-sub" x="554" y="372" text-anchor="middle">전 구간 축퇴 상태</text>
+
+            <rect class="fx-bx-key" x="716" y="156" width="156" height="124" rx="6"/>
+            <text class="fx-title" x="794" y="183" text-anchor="middle">접합부만 WT 복원</text>
+            <text class="fx-sub fx-is-fix" x="794" y="205" text-anchor="middle">오버랩 = 원래 코돈</text>
+            <text class="fx-sub fx-is-deg" x="794" y="223" text-anchor="middle">몸통 = 축퇴 유지</text>
+            <text class="fx-sub" x="794" y="245" text-anchor="middle">Tm 계산값 그대로 유효</text>
+            <text class="fx-mono-s" x="794" y="265" text-anchor="middle">fixed_codon_count</text>
+
+            <rect class="fx-bx" x="944" y="156" width="156" height="124" rx="6"/>
+            <text class="fx-title" x="1022" y="183" text-anchor="middle">최종 올리고 세트</text>
+            <text class="fx-sub" x="1022" y="205" text-anchor="middle">짝수번 &rarr; 역상보</text>
+            <text class="fx-mono-s" x="1022" y="227" text-anchor="middle">N&harr;N  R&harr;Y  M&harr;K</text>
+            <text class="fx-mono-s" x="1022" y="245" text-anchor="middle">S&harr;S  W&harr;W  H&harr;D  B&harr;V</text>
+            <text class="fx-sub" x="1022" y="266" text-anchor="middle">CSV &middot; FASTA</text>
+
+            <path class="fx-ln-fix" d="M176 88 H242" marker-end="url(#fx1-fix)"/>
+            <text class="fx-arrow" x="209" y="79" text-anchor="middle">염기 그대로</text>
+            <path class="fx-ln-fix" d="M404 88 H470" marker-end="url(#fx1-fix)"/>
+            <text class="fx-arrow" x="437" y="79" text-anchor="middle">점수 최저</text>
+            <path class="fx-ln-deg" d="M176 348 H242" marker-end="url(#fx1-deg)"/>
+            <text class="fx-arrow" x="209" y="339" text-anchor="middle">코돈 단위</text>
+            <path class="fx-ln-deg" d="M404 348 H470" marker-end="url(#fx1-deg)"/>
+            <text class="fx-arrow" x="437" y="339" text-anchor="middle">치환</text>
+            <path class="fx-ln-dash" d="M98 128 V200 H326 V284" marker-end="url(#fx1-faint)"/>
+            <text class="fx-arrow" x="212" y="192" text-anchor="middle">관측 코돈 참조 (CTN인지 TTR인지)</text>
+            <path class="fx-ln" d="M632 88 H674 V196 H710" marker-end="url(#fx1-ink)"/>
+            <text class="fx-arrow" x="666" y="150" text-anchor="end">경계 좌표</text>
+            <path class="fx-ln" d="M632 348 H674 V240 H710" marker-end="url(#fx1-ink)"/>
+            <text class="fx-arrow" x="666" y="296" text-anchor="end">축퇴 서열</text>
+            <path class="fx-ln" d="M872 218 H938" marker-end="url(#fx1-ink)"/>
+            <text class="fx-arrow" x="905" y="209" text-anchor="middle">최종 서열</text>
+          </svg>
+        </div>
+        <figcaption>
+          위 경로는 WT 염기만 보고 Tm&middot;GC&middot;dimer를 계산해 올리고 경계를 정합니다. 아래 경로는 AA 서열을
+          IUPAC 축퇴 코돈으로 바꿉니다. 두 결과는 마지막에 합쳐지고, 이때 오버랩 구간만 원래 코돈으로
+          되돌아갑니다 &mdash; 그래서 위 경로에서 계산한 Tm이 최종 산물에도 그대로 맞습니다.
+        </figcaption>
+      </figure>
+
+      <figure class="fig">
+        <div class="fig-head"><span class="fig-n">Figure 2</span>접합부를 고정하는 이유</div>
+        <div class="fig-scroll">
+          <svg id="figJunction" viewBox="0 0 1000 362" role="img"
+               aria-label="접합부를 축퇴시키면 따로 합성된 두 올리고 풀이 9 bp 오버랩에서 완전히 상보일 확률이 32분의 1로 떨어진다. 접합부를 WT로 고정하면 항상 완전 상보가 되고, 그 대가로 그 구간의 코돈 다양성을 잃는다.">
+            <defs>
+              <marker id="fx2-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-ink" d="M0 0 L10 5 L0 10 Z"/></marker>
+            </defs>
+
+            <line class="fx-rule" x1="500" y1="8" x2="500" y2="340"/>
+
+            <text class="fx-title fx-is-deg" x="16" y="24">접합부까지 축퇴시킨다면</text>
+            <rect class="fx-zone fx-zone-deg" x="206" y="44" width="90" height="80" rx="4"/>
+            <text class="fx-sub fx-is-deg" x="251" y="38" text-anchor="middle">오버랩 9 bp</text>
+            <rect class="fx-fill-deg" x="16" y="52" width="190" height="24" rx="3"/>
+            <rect class="fx-fill-deg" x="206" y="52" width="90" height="24" rx="3"/>
+            <text class="fx-sub" x="28" y="68">Oligo 1  5&prime;&rarr;3&prime;</text>
+            <rect class="fx-fill-deg" x="206" y="92" width="90" height="24" rx="3"/>
+            <rect class="fx-fill-deg" x="296" y="92" width="158" height="24" rx="3"/>
+            <text class="fx-sub" x="442" y="108" text-anchor="end">Oligo 2  3&prime;&larr;5&prime;</text>
+            <path class="fx-ln" d="M251 124 V146" marker-end="url(#fx2-ink)"/>
+            <text class="fx-sub" x="235" y="172" text-anchor="middle">오버랩 구간에서 실제로 일어나는 결합</text>
+            <text class="fx-duplex" x="235" y="198" text-anchor="middle" xml:space="preserve">5&prime; C T N T T Y G G N 3&prime;</text>
+            <text class="fx-duplex fx-is-deg" x="235" y="216" text-anchor="middle" xml:space="preserve">   | | ? | | ? | | ?   </text>
+            <text class="fx-duplex" x="235" y="234" text-anchor="middle" xml:space="preserve">3&prime; G A N A A R C C N 5&prime;</text>
+            <rect class="fx-bx-deg" x="16" y="256" width="438" height="82" rx="6"/>
+            <text class="fx-sub" x="34" y="280">두 올리고는 서로 다른 풀로 따로 합성됩니다.</text>
+            <text class="fx-sub" x="34" y="301">9 bp가 완전히 상보일 확률 = &frac14; &times; &frac12; &times; &frac14; = <tspan class="fx-duplex fx-is-deg">1/32</tspan></text>
+            <text class="fx-sub" x="34" y="322">나머지는 mismatch &rarr; 조립 수율&middot;라이브러리 조성이 흔들림</text>
+
+            <text class="fx-title fx-is-fix" x="546" y="24">이 툴 &mdash; 접합부는 WT 고정</text>
+            <rect class="fx-zone fx-zone-fix" x="736" y="44" width="90" height="80" rx="4"/>
+            <text class="fx-sub fx-is-fix" x="781" y="38" text-anchor="middle">오버랩 9 bp</text>
+            <rect class="fx-fill-deg" x="546" y="52" width="190" height="24" rx="3"/>
+            <rect class="fx-fill-fix" x="736" y="52" width="90" height="24" rx="3"/>
+            <text class="fx-sub" x="558" y="68">Oligo 1  5&prime;&rarr;3&prime;</text>
+            <rect class="fx-fill-fix" x="736" y="92" width="90" height="24" rx="3"/>
+            <rect class="fx-fill-deg" x="826" y="92" width="158" height="24" rx="3"/>
+            <text class="fx-sub" x="972" y="108" text-anchor="end">Oligo 2  3&prime;&larr;5&prime;</text>
+            <path class="fx-ln" d="M781 124 V146" marker-end="url(#fx2-ink)"/>
+            <text class="fx-sub" x="765" y="172" text-anchor="middle">오버랩 구간에서 실제로 일어나는 결합</text>
+            <text class="fx-duplex" x="765" y="198" text-anchor="middle" xml:space="preserve">5&prime; C T G T T C G G T 3&prime;</text>
+            <text class="fx-duplex fx-is-fix" x="765" y="216" text-anchor="middle" xml:space="preserve">   | | | | | | | | |   </text>
+            <text class="fx-duplex" x="765" y="234" text-anchor="middle" xml:space="preserve">3&prime; G A C A A G C C A 5&prime;</text>
+            <rect class="fx-bx-fix" x="546" y="256" width="438" height="82" rx="6"/>
+            <text class="fx-sub" x="564" y="280">양쪽 모두 원래 코돈이라 언제나 완전 상보.</text>
+            <text class="fx-sub" x="564" y="301">설계 단계에서 잰 Tm이 곧 실제 Tm.</text>
+            <text class="fx-sub" x="564" y="322">대가 &mdash; 이 구간 코돈은 WT만 나옴 (개수를 결과에 표시)</text>
+          </svg>
+        </div>
+        <figcaption>
+          같은 접합부를 두 가지 설계로 그린 것입니다. 왼쪽처럼 오버랩까지 축퇴시키면, 따로 합성된 두 풀에서
+          무작위로 만난 분자끼리 9 bp 내내 상보일 확률이 1/32까지 떨어집니다. 나머지는 mismatch를 안고 붙어서
+          조립 수율이 떨어지고, polymerase가 한쪽 서열로 덮어쓰기 때문에 최종 라이브러리에 뭐가 들었는지도
+          예측하기 어려워집니다. 오른쪽은 그 구간의 다양성을 포기하는 대신 결합을 확실하게 만듭니다.
+          (9 bp는 설명용 예시이고, 실제 오버랩 길이는 접합부마다 Tm에 맞춰 달라집니다.)
+        </figcaption>
+      </figure>
+
+    </div>
+  </details>
+
+  {% if result %}
+  {% set s = result.design_summary %}
+
+  <section class="result-head">
+    <h2>Design Result <span class="b {% if result.auto_split %}b-fwd{% else %}b-ghost{% endif %}">{% if result.auto_split %}Auto optimization{% else %}Manual{% endif %}</span></h2>
+    <p>Synonymous DNA Library Oligomer Design</p>
+  </section>
+
+  <div class="result-top">
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="v">{{ result.dna_length }}<span class="u">bp</span></div>
+        <div class="k">DNA length</div>
+      </div>
+      <div class="stat accent">
+        <div class="v">{{ result.oligos|length }}</div>
+        <div class="k">Designed oligomers</div>
+      </div>
+      <div class="stat">
+        <div class="v">{% if s and s.avg_tm %}{{ s.avg_tm }}<span class="u">&deg;C</span>{% else %}&ndash;{% endif %}</div>
+        <div class="k">Mean junction Tm</div>
+      </div>
+      <div class="stat teal">
+        <div class="v">{{ result.fixed_codon_count }}</div>
+        <div class="k">Fixed overlap codons</div>
+      </div>
+    </div>
+
+    {% if s %}
+    <aside class="card qc">
+      <h3>Design QC</h3>
+      <div class="qc-item">
+        <span class="qc-mark {% if s.usable %}pass{% else %}warn{% endif %}">{% if s.usable %}&check;{% else %}&#9888;{% endif %}</span>
+        <span class="qc-name">Tm consistency</span>
+        <span class="qc-val">&plusmn;{{ s.max_tm_deviation }}&deg;C</span>
+      </div>
+      <div class="qc-item">
+        <span class="qc-mark {% if s.below_floor == 0 %}pass{% else %}warn{% endif %}">{% if s.below_floor == 0 %}&check;{% else %}&#9888;{% endif %}</span>
+        <span class="qc-name">Tm in {{ s.tm_sweet_min }}&ndash;{{ s.tm_sweet_max }}&deg;C</span>
+        <span class="qc-val">{{ s.sweet }}/{{ s.total_junctions }}</span>
+      </div>
+      <div class="qc-item">
+        <span class="qc-mark {% if s.gc_ok == s.total_junctions %}pass{% else %}warn{% endif %}">{% if s.gc_ok == s.total_junctions %}&check;{% else %}&#9888;{% endif %}</span>
+        <span class="qc-name">Overlap GC 40&ndash;60%</span>
+        <span class="qc-val">{{ s.gc_ok }}/{{ s.total_junctions }}</span>
+      </div>
+      <div class="qc-item">
+        <span class="qc-mark {% if not s.terminal_gc_fail_count %}pass{% else %}warn{% endif %}">{% if not s.terminal_gc_fail_count %}&check;{% else %}&#9888;{% endif %}</span>
+        <span class="qc-name">3&prime; GC clamp &ge;2/6</span>
+        <span class="qc-val">{{ result.oligos|length - (s.terminal_gc_fail_count or 0) }}/{{ result.oligos|length }}</span>
+      </div>
+      <div class="qc-item">
+        <span class="qc-mark {% if not s.dimer_redesign_count and not s.dimer_caution_count %}pass{% else %}warn{% endif %}">{% if not s.dimer_redesign_count and not s.dimer_caution_count %}&check;{% else %}&#9888;{% endif %}</span>
+        <span class="qc-name">3&prime; dimer &Delta;G</span>
+        <span class="qc-val">{{ (s.dimer_redesign_count or 0) + (s.dimer_caution_count or 0) }} flagged</span>
+      </div>
+      <div class="qc-item">
+        <span class="qc-mark {% if s.remaining_risk|length == 0 %}pass{% else %}warn{% endif %}">{% if s.remaining_risk|length == 0 %}&check;{% else %}&#9888;{% endif %}</span>
+        <span class="qc-name">Repeat / mispriming</span>
+        <span class="qc-val">{{ s.remaining_risk|length }} flagged</span>
+      </div>
+      <div class="qc-item">
+        <span class="qc-mark info">&#183;</span>
+        <span class="qc-name">Overlap length</span>
+        <span class="qc-val">{{ s.overlap_min }}&ndash;{{ s.overlap_max }} bp</span>
+      </div>
+      <div class="qc-item">
+        <span class="qc-mark info">&#183;</span>
+        <span class="qc-name">Synthesis</span>
+        <span class="qc-val">{{ s.total_nt }} nt &middot; &#8361;{{ "{:,}".format(s.estimated_price_krw) }}</span>
+      </div>
+    </aside>
+    {% endif %}
+  </div>
+
+  <section class="card">
+    <div class="card-head tight">
+      <div>
+        <h3 class="card-title">Assembly-aware Oligomer Map</h3>
+        <p class="card-note">Degenerate library regions are combined with fixed overlap junctions for PCA assembly.</p>
+      </div>
+    </div>
+    <div class="map-wrap">{{ result.diagram_svg | safe }}</div>
+    <div class="map-legend">
+      <span><i class="sw sw-fwd"></i>Forward oligomer</span>
+      <span><i class="sw sw-rev"></i>Reverse oligomer</span>
+      <span><i class="sw sw-primer"></i>Also used as PCR primer</span>
+      <span>세로선 = 접합부, 숫자는 오버랩 길이와 Tm</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head tight">
+      <div>
+        <h3 class="card-title">Sequence Conversion</h3>
+        <p class="card-note">WT 코딩 서열이 동의 치환 라이브러리 서열로 바뀐 결과입니다. 오버랩에 걸친 코돈은 WT로 유지됩니다.</p>
+      </div>
+    </div>
+    <div class="seq-compare">
+      <div class="seq-panel">
+        <div class="seq-head">
+          <span class="seq-name">WT Coding Sequence</span>
+          <span class="seq-meta">{{ result.dna_length }} bp</span>
+        </div>
+        <div class="seq-box wt">{{ form.dna_sequence }}</div>
+      </div>
+      <div class="seq-panel">
+        <div class="seq-head">
+          <span class="seq-name">Synonymous Library Sequence</span>
+          <span class="seq-meta">{{ result.amino_acid_sequence|length }} aa</span>
+        </div>
+        <div class="seq-box" id="libSeq">{{ result.iupac_sequence_html | safe }}</div>
+      </div>
+    </div>
+    <div class="map-legend" style="margin-top:14px;">
+      <span><i class="sw sw-deg"></i>IUPAC degenerate code</span>
+      <span><i class="sw sw-fix"></i>Fixed overlap (WT 유지, {{ result.fixed_codon_count }} codons)</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head tight">
+      <div>
+        <h3 class="card-title">Designed Oligomers <span style="color:var(--faint);font-weight:600;">({{ result.oligos|length }})</span></h3>
+        <p class="card-note">Order Sequence가 실제 주문용 5&prime;&rarr;3&prime; 서열입니다. 첫/마지막 oligomer는 최종 증폭 시 PCR primer로도 쓰입니다.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="designed">
+        <thead>
+          <tr>
+            <th>Oligo</th>
+            <th>Strand</th>
+            <th>Position</th>
+            <th class="num">Length</th>
+            <th class="num">Overlap</th>
+            <th class="num">Tm</th>
+            <th>QC</th>
+            <th>Order Sequence (5&prime;&rarr;3&prime;)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for oligo in result.oligos %}
+          <tr>
+            <td class="oid">O{{ oligo.index }}{% if oligo.is_primer %} <span class="b b-ghost">primer</span>{% endif %}</td>
+            <td><span class="b {% if oligo.strand == 'F' %}b-fwd">FWD{% else %}b-rev">REV{% endif %}</span></td>
+            <td class="num">{{ oligo.start }}&ndash;{{ oligo.end }}</td>
+            <td class="num">{{ oligo.length }} bp</td>
+            <td class="num">{% if oligo.overlap_to_next is not none %}{{ oligo.overlap_to_next }} bp{% else %}&ndash;{% endif %}</td>
+            <td class="num">{% if oligo.tm_to_next is not none %}{{ oligo.tm_to_next }}&deg;C{% else %}&ndash;{% endif %}</td>
+            <td>
+              {% if oligo.dimer_flag == 'redesign' %}<span class="b b-fail">DIMER</span>
+              {% elif oligo.tm_ok is sameas false %}<span class="b b-warn">Tm</span>
+              {% elif not oligo.terminal_gc_ok %}<span class="b b-warn">GC</span>
+              {% elif oligo.dimer_flag == 'caution' or oligo.high_t_warning %}<span class="b b-warn">CHECK</span>
+              {% else %}<span class="b b-pass">PASS</span>{% endif %}
+            </td>
+            <td class="seq">{{ oligo.order_sequence_html | safe }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if result.candidates %}
+  <details class="cands">
+    <summary>Alternative designs &mdash; 자동 탐색한 후보 {{ result.candidates|length }}개 비교</summary>
+    <div class="cands-body">
+      <p class="export-note">45&ndash;65&deg;C 전 구간 &times; 3가지 조립 전략을 모두 시도한 뒤 온도별 최적안만 남겨 점수 순으로 정렬했습니다 (점수 낮을수록 좋음).</p>
+      <div class="table-wrap">
+        <table class="designed">
+          <thead>
+            <tr><th>Rank</th><th>Strategy / Tm</th><th class="num">Overlap</th><th class="num">Total nt</th><th class="num">Est. cost</th><th class="num">Score</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for c in result.candidates %}
+            <tr>
+              <td class="oid">#{{ c.rank }}</td>
+              <td>{{ c.label }}</td>
+              <td class="num">{% if c.design_summary.overlap_min is not none %}{{ c.design_summary.overlap_min }}&ndash;{{ c.design_summary.overlap_max }} bp{% else %}&ndash;{% endif %}</td>
+              <td class="num">{{ c.total_nt }} nt</td>
+              <td class="num">&#8361;{{ "{:,}".format(c.estimated_price_krw) }}</td>
+              <td class="num">{{ c.score|round(1) }}</td>
+              <td>{% if c.design_summary.usable %}<span class="b b-pass">USABLE</span>{% else %}<span class="b b-fail">Tm &plusmn;{{ c.design_summary.max_tm_deviation }}&deg;C</span>{% endif %}</td>
+              <td>
+                {% if c.key != result.primary_key %}
+                <form method="post" style="display:inline;">
+                  <input type="hidden" name="dna_sequence" value="{{ form.dna_sequence }}">
+                  <input type="hidden" name="amino_acid_sequence" value="{{ form.amino_acid_sequence }}">
+                  <input type="hidden" name="oligo_length" value="{{ form.oligo_length }}">
+                  <input type="hidden" name="overlap" value="{{ form.overlap }}">
+                  {% if form.auto_split %}<input type="hidden" name="auto_split" value="on">{% endif %}
+                  <input type="hidden" name="candidate" value="{{ c.key }}">
+                  <button type="submit" name="action" value="run" class="btn-outline" style="padding:5px 11px;font-size:10.5px;">Select</button>
+                </form>
+                {% else %}<span class="b b-ghost">selected</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+  {% endif %}
+
+  <section class="card">
+    <div class="card-head tight">
+      <div>
+        <h3 class="card-title">Export Design</h3>
+        <p class="card-note">CSV는 oligomer 테이블 전체, FASTA는 주문용 서열만 포함합니다.</p>
+      </div>
+    </div>
+    <form method="post" class="export-row">
+      <input type="hidden" name="dna_sequence" value="{{ form.dna_sequence }}">
+      <input type="hidden" name="amino_acid_sequence" value="{{ form.amino_acid_sequence }}">
+      <input type="hidden" name="oligo_length" value="{{ form.oligo_length }}">
+      <input type="hidden" name="overlap" value="{{ form.overlap }}">
+      {% if form.auto_split %}<input type="hidden" name="auto_split" value="on">{% endif %}
+      {% if result.primary_key %}<input type="hidden" name="candidate" value="{{ result.primary_key }}">{% endif %}
+      <button class="btn-primary" type="submit" name="action" value="download_csv">Download Oligomer Design (CSV)</button>
+      <button class="btn-outline" type="submit" name="action" value="download_fasta">FASTA</button>
+    </form>
+  </section>
+  {% endif %}
+
+  <footer class="foot">
+    <p>Silent Library Designer &middot; Version {{ version }} &middot; For research use only.</p>
+    <p>접합부 위치는 실제 DNA 염기 기준으로 결정되고, 그 외 구간만 IUPAC 축약 코돈으로 채워집니다. 합성 전 제한효소 인식 부위&middot;반복서열을 확인하세요.</p>
+  </footer>
+
+</main>
+
+<script>
+(function () {
+  var dna = document.getElementById('dna_sequence');
+  var aa = document.getElementById('amino_acid_sequence');
+  var dnaStatus = document.getElementById('dnaStatus');
+  var aaStatus = document.getElementById('aaStatus');
+
+  function clean(v) { return (v || '').replace(/\s+/g, '').toUpperCase(); }
+
+  function render() {
+    var d = clean(dna.value);
+    var a = clean(aa.value);
+    var inFrame = d.length > 0 && d.length % 3 === 0;
+    var onlyATGC = d.length > 0 && /^[ATGC]+$/.test(d);
+    var matches = a.length > 0 && d.length === a.length * 3;
+
+    dnaStatus.innerHTML =
+      '<span><b>' + d.length + '</b> bp</span><span class="sep">|</span>' +
+      '<span><b>' + Math.floor(d.length / 3) + '</b> codons</span><span class="sep">|</span>' +
+      (onlyATGC && inFrame
+        ? '<span class="ok">&check; valid CDS</span>'
+        : '<span class="bad">' + (!onlyATGC ? 'A/T/G/C 외 문자' : '3의 배수 아님') + '</span>');
+
+    aaStatus.innerHTML =
+      '<span><b>' + a.length + '</b> aa</span><span class="sep">|</span>' +
+      (matches
+        ? '<span class="ok">&check; length matches CDS</span>'
+        : '<span class="bad">DNA 길이와 불일치</span>');
+  }
+
+  dna.addEventListener('input', render);
+  aa.addEventListener('input', render);
+  render();
+
+  // design mode toggle
+  var auto = document.getElementById('auto_split');
+  var grid = document.getElementById('manualGrid');
+  var autoLabel = document.getElementById('modeAutoLabel');
+  var manualLabel = document.getElementById('modeManualLabel');
+
+  function syncMode() {
+    var on = auto.checked;
+    document.getElementById('oligo_length').disabled = on;
+    document.getElementById('overlap').disabled = on;
+    grid.classList.toggle('is-off', on);
+    autoLabel.classList.toggle('is-on', on);
+    manualLabel.classList.toggle('is-on', !on);
+  }
+  auto.addEventListener('change', syncMode);
+  manualLabel.addEventListener('click', function () { auto.checked = false; syncMode(); });
+  syncMode();
+
+  // highlight IUPAC degenerate codes in the library sequence (presentation only;
+  // fixed-overlap spans contain plain ATGC so a text-node pass cannot touch them)
+  var lib = document.getElementById('libSeq');
+  if (lib) {
+    var walker = document.createTreeWalker(lib, NodeFilter.SHOW_TEXT, null);
+    var nodes = [];
+    while (walker.nextNode()) { nodes.push(walker.currentNode); }
+    nodes.forEach(function (node) {
+      if (node.parentElement.classList.contains('fixed-codon')) { return; }
+      if (!/[NRYMKSWHBVD]/.test(node.nodeValue)) { return; }
+      var frag = document.createDocumentFragment();
+      node.nodeValue.split(/([NRYMKSWHBVD])/).forEach(function (part) {
+        if (!part) { return; }
+        if (/^[NRYMKSWHBVD]$/.test(part)) {
+          var el = document.createElement('span');
+          el.className = 'deg';
+          el.textContent = part;
+          frag.appendChild(el);
+        } else {
+          frag.appendChild(document.createTextNode(part));
+        }
+      });
+      node.parentNode.replaceChild(frag, node);
+    });
+  }
+})();
+</script>
+</body>
+</html>
